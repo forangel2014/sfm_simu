@@ -1,0 +1,42 @@
+    Structure-from-Motion Revisited 的作者开发了SFM开源系统colmap，但是我在尝试用cmake重建其工程的时候遇到了
+很多错误，于是想自己来复现论文的算法。因为之前的有些小模块已经用matlab实现过了，所以用matlab来编写。这份代码
+没有实现论文提到的全部算法思路，但实现了基本的增量重构的框架。
+    算法的大致流程可以在"流程图.jpg"中看到，这是一开始的想法，在实现时增加了一些细节。由于之前调试的SIFT算法在
+更换图片后就会出现大量的匹配错误，鲁棒性很差，因此选择生成一些3d点，并将其投影来模拟对实物拍摄照片并提取SIFT
+特征的过程。算法的最终目的就是恢复出开始生成的那堆点云。
+    运行run_initialization来执行初始化步骤，以第一个相机的相机坐标系为世界坐标系，生成点云，随机选取第两个相机
+位姿（会保证两者能拍摄到共同的点云），给定相机内参K，执行投影（每个点投影时都会添加一定的噪声）。对投影结果生成
+一组匹配（模拟利用SIFT特征的匹配过程，设置了一定的错误匹配概率）。用RANSAC算法对匹配结果进行8点法恢复基础矩阵，
+获得局内点最多的模型。通过K和F计算得到本质矩阵E，分解E得到第二个相机的位姿，但是有4种可能解，通过恢复的三维点的
+位置筛选出（正确？）的解。随后执行三角化，通过两个相机的位姿与筛选的局内匹配点恢复部分三维点。
+    运行run_incremental_reconstruction来执行增量重构步骤，针对初始化步骤中生成的点云，随机生成一定量的相机位
+姿，并计算它们拍摄到的投影点。用观察到最多已有三角化的点的原则选取最好的下一张重建图像，建立二维点与三维点的
+匹配，解PnP问题得到新注册的相机位姿的估计。对所有已注册的相机及其拍摄到的点执行三角化，再通过bundle adjustment
+降低重构误差。
+    但是这份代码目前还存在一些问题：1.通过恢复的三维点的位置筛选相机位姿解时仍会出错，运行run_initialization
+结束后工作区R与R2的值，t与t2的值若恰好相反，则是出现了此错误；没有出现此错误时初始化步骤一般较为精确，输出的
+mean_reconstruct_error一般在10以下；2.bundle adjustment的优化算法选择了一阶梯度下降和牛顿法，但损失降到最低
+时仍会使第一步incremental_reconstruction的mean_reconstruct_error增大，在第二轮的增量重构中增大的误差就会导
+致解PnP时产生更大的误差...因此几轮之后模型就基本失效（过滤超出范围的重建点会导致重建点越来越少...）。重新去翻
+了翻资料发现我的bundle adjustment仅仅优化了三维点X，实际上应同时优化X和相机姿态P，这样能不断吸收PnP和三角化
+步骤中产生的误差，使得增量重构的步骤迭代地运行。我正在尝试修改这一部分的代码。
+    用pcshow(points_3d')或pcshow(points_reconstruct')可以看到可视化的点云。
+    以下是文件清单：
+    Vec2Skew：将矢量转化为其叉乘的矩阵
+    select_points：选择某一相机能拍摄到的三维点
+    run_initialization：执行初始化步骤
+    run_incremental_reconstruction：执行增量重构步骤
+    project_points：将三维点投影到相机平面上
+    n_triangulation，Rt_triangulation，LinearTriangulation：三种不同输入参数的三角化
+    my_ransac：针对获取基础矩阵的ransac
+    LinearPnP：最小二乘求解PnP问题
+    in_pc：判断矢量是否在点云空间内
+    generate_random_camera_pose：随机生成相机姿态
+    generate_match：模拟SIFT特征匹配生成匹配
+    GD：一阶梯度下降与牛顿法
+    filter_and_disp：滤去超出范围的重建点，输出重建误差
+    ExtractCameraPose：从本质矩阵中提取相机位姿
+    EstimateFundamentalMatrix：8点法估计基础矩阵
+    EssentialMatrixFromFundamentalMatrix：通过基础矩阵计算本质矩阵
+    DisambiguateCameraPose：筛选出正确的相机位姿
+    call_loss：计算bundle adjustment中的重投影误差
